@@ -470,7 +470,9 @@ fn apply_derived_hand_input(pointer: &mut Pointer, derived: &DerivedHandInput, u
         pointer.tracked = true;
     }
 
-    pointer.handsfree = false;
+    // For joint-derived hand input, prefer the compact handsfree reticle instead of a full laser.
+    // It is much less intrusive for controller-free use, especially while typing.
+    pointer.handsfree = true;
     pointer.now.scroll_x = 0.0;
     pointer.now.scroll_y = 0.0;
     pointer.now.alt_click = false;
