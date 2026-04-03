@@ -229,6 +229,7 @@ pub struct Pointer {
     pub idx: usize,
     pub pose: Affine3A,
     pub raw_pose: Affine3A,
+    pub poke_point: Vec3A,
     pub now: PointerState,
     pub before: PointerState,
     pub last_click: Instant,
@@ -246,6 +247,7 @@ impl Pointer {
             idx,
             pose: Affine3A::IDENTITY,
             raw_pose: Affine3A::IDENTITY,
+            poke_point: Vec3A::ZERO,
             now: PointerState::default(),
             before: PointerState::default(),
             last_click: Instant::now(),
@@ -651,6 +653,13 @@ where
     let mode = pointer.interaction.mode;
     let edit_mode = overlays.get_edit_mode();
 
+    if let Some((pointer_hit, hit, pressed)) = get_watch_poke_hit(pointer_idx, overlays, app) {
+        if pressed {
+            app.input_state.pointers[pointer_idx].now.click = true;
+        }
+        return (Some((pointer_hit, hit)), None);
+    }
+
     let mut hits: SmallVec<[RayHit; 8]> = smallvec!();
 
     for (id, overlay) in overlays.iter() {
@@ -706,6 +715,74 @@ where
     }
 
     (None, None)
+}
+
+fn get_watch_poke_hit<O>(
+    pointer_idx: usize,
+    overlays: &mut OverlayWindowManager<O>,
+    app: &mut AppState,
+) -> Option<(PointerHit, RayHit, bool)>
+where
+    O: Default,
+{
+    let pointer = &app.input_state.pointers[pointer_idx];
+    let poke_point = pointer.poke_point;
+    let mode = pointer.interaction.mode;
+    let pointer_pos = pointer.pose.translation;
+
+    for (id, overlay) in overlays.iter_mut() {
+        if overlay.config.name.as_ref() != WATCH_NAME {
+            continue;
+        }
+        let Some(overlay_state) = overlay.config.active_state.as_ref() else {
+            continue;
+        };
+
+        let local = overlay_state
+            .transform
+            .inverse()
+            .transform_point3a(poke_point);
+        let Some(uv) = overlay
+            .config
+            .backend
+            .as_mut()
+            .get_interaction_transform()
+            .map(|a| a.transform_point2(local.xy()))
+        else {
+            continue;
+        };
+
+        if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+            continue;
+        }
+
+        let depth = local.z.abs();
+        if depth > 0.03 {
+            continue;
+        }
+
+        let pressed = depth < 0.012;
+        let pointer_hit = PointerHit {
+            pointer: pointer_idx,
+            overlay: id,
+            mode,
+            primary: false,
+            uv,
+        };
+        let hit = RayHit {
+            overlay: id,
+            global_pos: poke_point,
+            local_pos: local.xy(),
+            dist: (poke_point - pointer_pos).length(),
+        };
+
+        let result = overlay.config.backend.on_hover(app, &pointer_hit);
+        if result.consume || overlay.config.editing {
+            return Some((pointer_hit, hit, pressed));
+        }
+    }
+
+    None
 }
 
 fn start_grab(

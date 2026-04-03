@@ -56,6 +56,7 @@ struct OpenXrHandTracking {
 struct DerivedHandInput {
     pose: Affine3A,
     hand_pose: Affine3A,
+    poke_point: Vec3A,
     pinch_strength: f32,
     grab_strength: f32,
     palm_up: bool,
@@ -600,6 +601,7 @@ fn apply_derived_hand_input(
     if update_pose {
         pointer.raw_pose = derived.hand_pose;
         pointer.pose = derived.pose;
+        pointer.poke_point = derived.poke_point;
         pointer.tracked = true;
     }
 
@@ -672,6 +674,7 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
     Some(DerivedHandInput {
         pose,
         hand_pose,
+        poke_point: index_tip,
         pinch_strength: pinch_strength(thumb_tip.into(), index_tip.into(), hand_scale),
         grab_strength: grab_strength(
             palm.into(),
