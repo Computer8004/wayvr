@@ -506,7 +506,7 @@ impl OpenXrHandTracking {
         }
 
         if self.toggle_progress > Duration::ZERO {
-            let progress_stage = ((self.toggle_progress.as_millis() / 175).min(8)) as u8;
+            let progress_stage = ((self.toggle_progress.as_millis() / 44).min(32)) as u8;
             if progress_stage > 0 && progress_stage != self.last_toggle_progress_stage {
                 self.last_toggle_progress_stage = progress_stage;
                 show_toggle_indicator(state, progress_stage);
@@ -567,16 +567,8 @@ fn hand_name(idx: usize) -> &'static str {
 }
 
 fn show_toggle_indicator(app: &mut AppState, stage: u8) {
-    let image = match stage {
-        1 => "hand-toggle/progress1.svg",
-        2 => "hand-toggle/progress2.svg",
-        3 => "hand-toggle/progress3.svg",
-        4 => "hand-toggle/progress4.svg",
-        5 => "hand-toggle/progress5.svg",
-        6 => "hand-toggle/progress6.svg",
-        7 => "hand-toggle/progress7.svg",
-        _ => "hand-toggle/progress8.svg",
-    };
+    let stage = stage.clamp(1, 32);
+    let image = format!("hand-toggle/progress{stage:02}.svg");
 
     app.tasks.enqueue(TaskType::Overlay(OverlayTask::Modify(
         OverlaySelector::Name(HAND_TOGGLE_INDICATOR_NAME.clone()),
@@ -587,7 +579,7 @@ fn show_toggle_indicator(app: &mut AppState, stage: u8) {
             ModifyPanelTask {
                 overlay: HAND_TOGGLE_INDICATOR_NAME.as_ref().to_string(),
                 element: "progress_ring".into(),
-                command: ModifyPanelCommand::SetImage(image.into()),
+                command: ModifyPanelCommand::SetImage(image),
             },
         )));
 }
