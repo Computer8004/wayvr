@@ -37,6 +37,9 @@ pub(super) struct OpenXrPointer {
 
 struct OpenXrHandTracking {
     trackers: [xr::HandTracker; 2],
+    logged_joint_success: [bool; 2],
+    last_missing_joint_log: [Instant; 2],
+    last_joint_error_log: [Instant; 2],
 }
 
 struct DerivedHandInput {
@@ -348,12 +351,33 @@ impl OpenXrInputSource {
 
 impl OpenXrHandTracking {
     fn new(xr: &XrState) -> Option<Self> {
-        let left = xr.session.create_hand_tracker(xr::Hand::LEFT).ok();
-        let right = xr.session.create_hand_tracker(xr::Hand::RIGHT).ok();
+        let left = match xr.session.create_hand_tracker(xr::Hand::LEFT) {
+            Ok(tracker) => {
+                log::info!("OpenXR left hand tracker created successfully.");
+                Some(tracker)
+            }
+            Err(err) => {
+                log::warn!("OpenXR left hand tracker unavailable: {err:?}");
+                None
+            }
+        };
+        let right = match xr.session.create_hand_tracker(xr::Hand::RIGHT) {
+            Ok(tracker) => {
+                log::info!("OpenXR right hand tracker created successfully.");
+                Some(tracker)
+            }
+            Err(err) => {
+                log::warn!("OpenXR right hand tracker unavailable: {err:?}");
+                None
+            }
+        };
 
         match (left, right) {
             (Some(left), Some(right)) => Some(Self {
                 trackers: [left, right],
+                logged_joint_success: [false, false],
+                last_missing_joint_log: [Instant::now(), Instant::now()],
+                last_joint_error_log: [Instant::now(), Instant::now()],
             }),
             _ => {
                 log::warn!(
@@ -369,40 +393,98 @@ impl OpenXrHandTracking {
 
         for (idx, tracker) in self.trackers.iter().enumerate() {
             let pointer = &mut input_state.pointers[idx];
-            if pointer.tracked {
-                any_tracked = true;
-                continue;
-            }
+            let had_pose = pointer.tracked;
+            any_tracked |= had_pose;
 
-            let Ok(Some(joints)) = xr
+            let joints = match xr
                 .stage
                 .locate_hand_joints(tracker, xr.predicted_display_time)
-            else {
-                continue;
+            {
+                Ok(Some(joints)) => joints,
+                Ok(None) => {
+                    if self.last_missing_joint_log[idx].elapsed() >= Duration::from_secs(2) {
+                        log::info!(
+                            "OpenXR {} hand tracker returned no joints this frame (pose source already tracked: {}).",
+                            hand_name(idx),
+                            had_pose
+                        );
+                        self.last_missing_joint_log[idx] = Instant::now();
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    if self.last_joint_error_log[idx].elapsed() >= Duration::from_secs(2) {
+                        log::warn!(
+                            "OpenXR {} hand joint locate failed: {err:?} (pose source already tracked: {}).",
+                            hand_name(idx),
+                            had_pose
+                        );
+                        self.last_joint_error_log[idx] = Instant::now();
+                    }
+                    continue;
+                }
             };
 
             let Some(derived) = derive_hand_input_from_joints(&joints) else {
+                if self.last_missing_joint_log[idx].elapsed() >= Duration::from_secs(2) {
+                    log::info!(
+                        "OpenXR {} hand joints were present but lacked the required valid positions for pose derivation.",
+                        hand_name(idx)
+                    );
+                    self.last_missing_joint_log[idx] = Instant::now();
+                }
                 continue;
             };
 
-            pointer.raw_pose = derived.pose;
-            pointer.pose = derived.pose;
-            pointer.tracked = true;
-            pointer.handsfree = false;
-            pointer.now.scroll_x = 0.0;
-            pointer.now.scroll_y = 0.0;
-            pointer.now.alt_click = false;
-            pointer.now.move_mouse = false;
-            pointer.now.click = derived.pinch_strength
-                >= if pointer.before.click { 0.65 } else { 0.78 }
-                && derived.grab_strength < 0.65;
-            pointer.now.grab =
-                derived.grab_strength >= if pointer.before.grab { 0.60 } else { 0.72 };
+            if !self.logged_joint_success[idx] {
+                log::info!(
+                    "OpenXR {} hand joints are valid. pose_fallback={} pinch_strength={:.2} grab_strength={:.2}",
+                    hand_name(idx),
+                    !had_pose,
+                    derived.pinch_strength,
+                    derived.grab_strength
+                );
+                self.logged_joint_success[idx] = true;
+            }
+
+            apply_derived_hand_input(pointer, &derived, !had_pose);
             any_tracked = true;
         }
 
         any_tracked
     }
+}
+
+fn hand_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "left",
+        1 => "right",
+        _ => "unknown",
+    }
+}
+
+fn apply_derived_hand_input(pointer: &mut Pointer, derived: &DerivedHandInput, update_pose: bool) {
+    if update_pose {
+        pointer.raw_pose = derived.pose;
+        pointer.pose = derived.pose;
+        pointer.tracked = true;
+    }
+
+    pointer.handsfree = false;
+    pointer.now.scroll_x = 0.0;
+    pointer.now.scroll_y = 0.0;
+    pointer.now.alt_click = false;
+    pointer.now.move_mouse = false;
+    pointer.now.click_modifier_right = false;
+    pointer.now.click_modifier_middle = false;
+    pointer.now.show_hide = false;
+    pointer.now.toggle_dashboard = false;
+    pointer.now.space_drag = false;
+    pointer.now.space_rotate = false;
+    pointer.now.space_reset = false;
+    pointer.now.click = derived.pinch_strength >= if pointer.before.click { 0.65 } else { 0.78 }
+        && derived.grab_strength < 0.65;
+    pointer.now.grab = derived.grab_strength >= if pointer.before.grab { 0.60 } else { 0.72 };
 }
 
 fn joint_position(joints: &xr::HandJointLocations, joint: xr::HandJoint) -> Option<Vec3A> {
