@@ -11,9 +11,13 @@ use serde::{Deserialize, Serialize};
 use wlx_common::{config::HandsfreePointer, config_io, overlays::ToastTopic};
 
 use crate::{
-    backend::input::{Haptics, InputState, Pointer, TrackedDevice, TrackedDeviceRole},
-    overlays::toast::Toast,
+    backend::{
+        input::{Haptics, InputState, Pointer, TrackedDevice, TrackedDeviceRole},
+        task::{ModifyPanelCommand, ModifyPanelTask, OverlayTask, TaskType},
+    },
+    overlays::{anchor::HAND_TOGGLE_INDICATOR_NAME, toast::Toast},
     state::{AppSession, AppState},
+    windowing::OverlaySelector,
 };
 
 use super::{XrState, helpers::posef_to_transform};
@@ -494,19 +498,7 @@ impl OpenXrHandTracking {
             let progress_stage = ((elapsed.as_millis() / 350).min(4)) as u8;
             if progress_stage > 0 && progress_stage != self.last_toggle_progress_stage {
                 self.last_toggle_progress_stage = progress_stage;
-                let icon = match progress_stage {
-                    1 => "◔",
-                    2 => "◑",
-                    3 => "◕",
-                    _ => "●",
-                };
-                Toast::new(
-                    ToastTopic::DesktopNotification,
-                    format!("{icon} Hand toggle"),
-                    "Hold both palms up".into(),
-                )
-                .with_timeout(0.45)
-                .submit(state);
+                show_toggle_indicator(state, progress_stage);
             }
             if elapsed >= Duration::from_millis(1400)
                 && self.last_toggle.elapsed() >= Duration::from_secs(2)
@@ -515,6 +507,7 @@ impl OpenXrHandTracking {
                 self.palms_up_since = None;
                 self.last_toggle = Instant::now();
                 self.last_toggle_progress_stage = 0;
+                hide_toggle_indicator(state);
 
                 for pointer in &mut state.input_state.pointers {
                     pointer.interaction_enabled = self.interaction_enabled;
@@ -549,6 +542,7 @@ impl OpenXrHandTracking {
         } else {
             self.palms_up_since = None;
             self.last_toggle_progress_stage = 0;
+            hide_toggle_indicator(state);
         }
     }
 }
@@ -559,6 +553,35 @@ fn hand_name(idx: usize) -> &'static str {
         1 => "right",
         _ => "unknown",
     }
+}
+
+fn show_toggle_indicator(app: &mut AppState, stage: u8) {
+    let image = match stage {
+        1 => "hand-toggle/progress1.svg",
+        2 => "hand-toggle/progress2.svg",
+        3 => "hand-toggle/progress3.svg",
+        _ => "hand-toggle/progress4.svg",
+    };
+
+    app.tasks.enqueue(TaskType::Overlay(OverlayTask::Modify(
+        OverlaySelector::Name(HAND_TOGGLE_INDICATOR_NAME.clone()),
+        Box::new(|app, o| o.activate(app)),
+    )));
+    app.tasks
+        .enqueue(TaskType::Overlay(OverlayTask::ModifyPanel(
+            ModifyPanelTask {
+                overlay: HAND_TOGGLE_INDICATOR_NAME.as_ref().to_string(),
+                element: "progress_ring".into(),
+                command: ModifyPanelCommand::SetImage(image.into()),
+            },
+        )));
+}
+
+fn hide_toggle_indicator(app: &mut AppState) {
+    app.tasks.enqueue(TaskType::Overlay(OverlayTask::Modify(
+        OverlaySelector::Name(HAND_TOGGLE_INDICATOR_NAME.clone()),
+        Box::new(|_app, o| o.deactivate()),
+    )));
 }
 
 fn apply_derived_hand_input(
@@ -700,18 +723,15 @@ fn pose_from_hand_points(
     wrist: Vec3,
     palm: Vec3,
     index_tip: Vec3,
-    middle_tip: Vec3,
-    ring_tip: Vec3,
-    little_tip: Vec3,
+    _middle_tip: Vec3,
+    _ring_tip: Vec3,
+    _little_tip: Vec3,
     little_proximal: Vec3,
     index_proximal: Vec3,
 ) -> Affine3A {
-    let wrist = Vec3A::from(wrist);
+    let _wrist = Vec3A::from(wrist);
     let palm = Vec3A::from(palm);
     let index_tip = Vec3A::from(index_tip);
-    let middle_tip = Vec3A::from(middle_tip);
-    let ring_tip = Vec3A::from(ring_tip);
-    let little_tip = Vec3A::from(little_tip);
     let little_proximal = Vec3A::from(little_proximal);
     let index_proximal = Vec3A::from(index_proximal);
 
@@ -720,11 +740,10 @@ fn pose_from_hand_points(
         right = Vec3A::X;
     }
 
-    let stable_forward = ((middle_tip + ring_tip + little_tip) / 3.0 - palm).normalize_or_zero();
-    let index_forward = (index_tip - palm).normalize_or_zero();
-    let mut forward = stable_forward.lerp(index_forward, 0.12).normalize_or_zero();
+    let knuckle_mid = (index_proximal + little_proximal) * 0.5;
+    let mut forward = (knuckle_mid - palm).normalize_or_zero();
     if forward.length_squared() < 0.0001 {
-        forward = (index_tip - wrist).normalize_or_zero();
+        forward = (index_tip - palm).normalize_or_zero();
     }
     if forward.length_squared() < 0.0001 {
         forward = Vec3A::NEG_Z;
@@ -745,7 +764,7 @@ fn pose_from_hand_points(
         up = Vec3A::Y;
     }
 
-    let translation = wrist.lerp(palm, 0.7);
+    let translation = palm + forward * 0.03;
 
     Affine3A {
         matrix3: Mat3A::from_cols(right, up, -forward),
@@ -1270,10 +1289,8 @@ mod tests {
         );
 
         let forward = pose.transform_vector3a(Vec3A::NEG_Z).normalize();
-        assert!(
-            forward.dot(Vec3A::new(0.0, 0.0, -1.0)) > 0.95,
-            "forward was {forward:?}"
-        );
-        assert!((pose.translation - Vec3A::new(0.0, 0.0, -0.021)).length() < 0.0001);
+        assert!(forward.z < -0.75, "forward was {forward:?}");
+        assert!(forward.length() > 0.99, "forward was {forward:?}");
+        assert!((pose.translation - Vec3A::new(-0.0166, 0.0, -0.0550)).length() < 0.001);
     }
 }

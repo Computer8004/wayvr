@@ -1,4 +1,4 @@
-use glam::{Affine3A, Quat, Vec3};
+use glam::{Affine3A, Quat, Vec3, vec3};
 use std::sync::{Arc, LazyLock};
 use wgui::event::{EventAlterables, StyleSetRequest};
 use wgui::parser::Fetchable;
@@ -38,6 +38,8 @@ pub fn create_anchor(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> 
 }
 
 pub static GRAB_HELP_NAME: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("grab-help"));
+pub static HAND_TOGGLE_INDICATOR_NAME: LazyLock<Arc<str>> =
+    LazyLock::new(|| Arc::from("hand-toggle-indicator"));
 
 pub fn create_grab_help(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
     let mut panel = GuiPanel::new_from_template(app, "gui/grab-help.xml", (), Default::default())?;
@@ -112,6 +114,35 @@ pub fn create_grab_help(app: &mut AppState) -> anyhow::Result<OverlayWindowConfi
             ..OverlayWindowState::default()
         },
         global: true,
+        ..OverlayWindowConfig::from_backend(Box::new(panel))
+    })
+}
+
+pub fn create_hand_toggle_indicator(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
+    let mut panel =
+        GuiPanel::new_from_template(app, "gui/hand-toggle-indicator.xml", (), Default::default())?;
+    panel.update_layout(app)?;
+
+    Ok(OverlayWindowConfig {
+        name: HAND_TOGGLE_INDICATOR_NAME.clone(),
+        z_order: Z_ORDER_HELP,
+        default_state: OverlayWindowState {
+            interactable: false,
+            grabbable: false,
+            positioning: Positioning::FollowHand {
+                hand: wlx_common::common::LeftRight::Left,
+                lerp: 0.2,
+                align_to_hmd: true,
+            },
+            transform: Affine3A::from_scale_rotation_translation(
+                Vec3::ONE * 0.065,
+                Quat::IDENTITY,
+                vec3(0.0, 0.06, -0.08),
+            ),
+            ..OverlayWindowState::default()
+        },
+        global: true,
+        show_on_spawn: false,
         ..OverlayWindowConfig::from_backend(Box::new(panel))
     })
 }
