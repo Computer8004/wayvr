@@ -154,7 +154,7 @@ impl OverlayWindowConfig {
                 lerp,
                 align_to_hmd,
             } => (
-                app.input_state.pointers[hand as usize].pose,
+                app.input_state.pointers[hand as usize].raw_pose,
                 lerp,
                 align_to_hmd,
             ),
@@ -226,7 +226,10 @@ impl OverlayWindowConfig {
             Positioning::Floating | Positioning::FollowHead { .. } => (app.input_state.hmd, false),
             Positioning::FollowHand {
                 hand, align_to_hmd, ..
-            } => (app.input_state.pointers[hand as usize].pose, align_to_hmd),
+            } => (
+                app.input_state.pointers[hand as usize].raw_pose,
+                align_to_hmd,
+            ),
             Positioning::Anchored => (app.anchor, false),
             Positioning::Static => {
                 if hard_reset {
@@ -293,7 +296,7 @@ pub fn save_transform(state: &mut OverlayWindowState, app: &mut AppState) {
     let parent_transform = match state.positioning {
         Positioning::Floating => snap_upright(app.input_state.hmd, Vec3A::Y),
         Positioning::FollowHead { .. } => app.input_state.hmd,
-        Positioning::FollowHand { hand, .. } => app.input_state.pointers[hand as usize].pose,
+        Positioning::FollowHand { hand, .. } => app.input_state.pointers[hand as usize].raw_pose,
         Positioning::Anchored => snap_upright(app.anchor, Vec3A::Y),
         Positioning::Static => return,
     };

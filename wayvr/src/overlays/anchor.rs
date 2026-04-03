@@ -137,7 +137,7 @@ pub fn create_hand_toggle_indicator(app: &mut AppState) -> anyhow::Result<Overla
             transform: Affine3A::from_scale_rotation_translation(
                 Vec3::ONE * 0.065,
                 Quat::IDENTITY,
-                vec3(0.0, 0.06, -0.08),
+                vec3(0.0, 0.03, -0.03),
             ),
             ..OverlayWindowState::default()
         },

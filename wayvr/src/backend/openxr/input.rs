@@ -54,6 +54,7 @@ struct OpenXrHandTracking {
 #[derive(Clone, Copy)]
 struct DerivedHandInput {
     pose: Affine3A,
+    hand_pose: Affine3A,
     pinch_strength: f32,
     grab_strength: f32,
     palm_up: bool,
@@ -495,7 +496,7 @@ impl OpenXrHandTracking {
         if both_palms_up {
             let since = self.palms_up_since.get_or_insert_with(Instant::now);
             let elapsed = since.elapsed();
-            let progress_stage = ((elapsed.as_millis() / 350).min(4)) as u8;
+            let progress_stage = ((elapsed.as_millis() / 175).min(8)) as u8;
             if progress_stage > 0 && progress_stage != self.last_toggle_progress_stage {
                 self.last_toggle_progress_stage = progress_stage;
                 show_toggle_indicator(state, progress_stage);
@@ -560,7 +561,11 @@ fn show_toggle_indicator(app: &mut AppState, stage: u8) {
         1 => "hand-toggle/progress1.svg",
         2 => "hand-toggle/progress2.svg",
         3 => "hand-toggle/progress3.svg",
-        _ => "hand-toggle/progress4.svg",
+        4 => "hand-toggle/progress4.svg",
+        5 => "hand-toggle/progress5.svg",
+        6 => "hand-toggle/progress6.svg",
+        7 => "hand-toggle/progress7.svg",
+        _ => "hand-toggle/progress8.svg",
     };
 
     app.tasks.enqueue(TaskType::Overlay(OverlayTask::Modify(
@@ -591,7 +596,7 @@ fn apply_derived_hand_input(
     interaction_enabled: bool,
 ) {
     if update_pose {
-        pointer.raw_pose = derived.pose;
+        pointer.raw_pose = derived.hand_pose;
         pointer.pose = derived.pose;
         pointer.tracked = true;
     }
@@ -644,6 +649,13 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
     let little_proximal = joint_position(joints, xr::HandJoint::LITTLE_PROXIMAL)?;
 
     let hand_scale = (palm - wrist).length().max(0.03);
+    let hand_pose = wrist_pose_from_hand_points(
+        wrist.into(),
+        palm.into(),
+        index_tip.into(),
+        little_proximal.into(),
+        index_proximal.into(),
+    );
     let pose = pose_from_hand_points(
         wrist.into(),
         palm.into(),
@@ -657,6 +669,7 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
 
     Some(DerivedHandInput {
         pose,
+        hand_pose,
         pinch_strength: pinch_strength(thumb_tip.into(), index_tip.into(), hand_scale),
         grab_strength: grab_strength(
             palm.into(),
@@ -692,6 +705,53 @@ fn palm_up_from_points(wrist: Vec3, palm: Vec3, fingertips: [Vec3; 4], hand_scal
     let hand_open = grab_strength(palm, fingertips, hand_scale) < 0.20;
 
     palm_above_wrist && fingertips_above_palm && hand_open
+}
+
+fn wrist_pose_from_hand_points(
+    wrist: Vec3,
+    palm: Vec3,
+    index_tip: Vec3,
+    little_proximal: Vec3,
+    index_proximal: Vec3,
+) -> Affine3A {
+    let wrist = Vec3A::from(wrist);
+    let palm = Vec3A::from(palm);
+    let index_tip = Vec3A::from(index_tip);
+    let little_proximal = Vec3A::from(little_proximal);
+    let index_proximal = Vec3A::from(index_proximal);
+
+    let mut forward = (index_tip - wrist).normalize_or_zero();
+    if forward.length_squared() < 0.0001 {
+        forward = (palm - wrist).normalize_or_zero();
+    }
+    if forward.length_squared() < 0.0001 {
+        forward = Vec3A::NEG_Z;
+    }
+
+    let mut right = (index_proximal - little_proximal).normalize_or_zero();
+    if right.length_squared() < 0.0001 {
+        right = Vec3A::X;
+    }
+
+    let mut up = right.cross(forward).normalize_or_zero();
+    if up.length_squared() < 0.0001 {
+        up = Vec3A::Y;
+    }
+
+    right = forward.cross(up).normalize_or_zero();
+    if right.length_squared() < 0.0001 {
+        right = Vec3A::X;
+    }
+
+    up = right.cross(forward).normalize_or_zero();
+    if up.length_squared() < 0.0001 {
+        up = Vec3A::Y;
+    }
+
+    Affine3A {
+        matrix3: Mat3A::from_cols(right, up, -forward),
+        translation: wrist,
+    }
 }
 
 fn normalized_strength(distance: f32, closed_distance: f32, open_distance: f32) -> f32 {
