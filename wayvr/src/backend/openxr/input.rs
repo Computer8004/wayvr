@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use glam::{Affine3A, Quat, Vec3, bool};
+use glam::{Affine3A, Mat3A, Quat, Vec3, Vec3A, bool};
 use libmonado::{self as mnd, DeviceLogic};
 use openxr::{self as xr, Quaternionf, Vector2f, Vector3f};
 use serde::{Deserialize, Serialize};
@@ -27,11 +27,22 @@ pub(super) struct OpenXrInputSource {
     action_set: xr::ActionSet,
     pointers: [OpenXrPointer; 2],
     handsfree_pointer: OpenXrPointer,
+    hand_tracking: Option<OpenXrHandTracking>,
 }
 
 pub(super) struct OpenXrPointer {
     source: OpenXrHandSource,
     space: xr::Space,
+}
+
+struct OpenXrHandTracking {
+    trackers: [xr::HandTracker; 2],
+}
+
+struct DerivedHandInput {
+    pose: Affine3A,
+    pinch_strength: f32,
+    grab_strength: f32,
 }
 
 pub struct MultiClickHandler<const COUNT: usize> {
@@ -187,6 +198,7 @@ impl OpenXrInputSource {
                 OpenXrPointer::new(xr, right_source)?,
             ],
             handsfree_pointer: OpenXrPointer::new(xr, fallback_source)?,
+            hand_tracking: OpenXrHandTracking::new(xr),
         })
     }
 
@@ -235,6 +247,11 @@ impl OpenXrInputSource {
             self.pointers[i].update(pointer, xr, &state.session)?;
             any_tracked |= pointer.tracked;
         }
+
+        if let Some(hand_tracking) = self.hand_tracking.as_mut() {
+            any_tracked |= hand_tracking.update(&mut state.input_state, xr);
+        }
+
         if !any_tracked {
             self.handsfree_pointer.update_handsfree(
                 &mut state.input_state.pointers[0],
@@ -326,6 +343,183 @@ impl OpenXrInputSource {
         });
 
         old_len != app.input_state.devices.len()
+    }
+}
+
+impl OpenXrHandTracking {
+    fn new(xr: &XrState) -> Option<Self> {
+        let left = xr.session.create_hand_tracker(xr::Hand::LEFT).ok();
+        let right = xr.session.create_hand_tracker(xr::Hand::RIGHT).ok();
+
+        match (left, right) {
+            (Some(left), Some(right)) => Some(Self {
+                trackers: [left, right],
+            }),
+            _ => {
+                log::warn!(
+                    "OpenXR hand trackers unavailable; continuing without XR_EXT_hand_tracking"
+                );
+                None
+            }
+        }
+    }
+
+    fn update(&mut self, input_state: &mut InputState, xr: &XrState) -> bool {
+        let mut any_tracked = false;
+
+        for (idx, tracker) in self.trackers.iter().enumerate() {
+            let pointer = &mut input_state.pointers[idx];
+            if pointer.tracked {
+                any_tracked = true;
+                continue;
+            }
+
+            let Ok(Some(joints)) = xr
+                .stage
+                .locate_hand_joints(tracker, xr.predicted_display_time)
+            else {
+                continue;
+            };
+
+            let Some(derived) = derive_hand_input_from_joints(&joints) else {
+                continue;
+            };
+
+            pointer.raw_pose = derived.pose;
+            pointer.pose = derived.pose;
+            pointer.tracked = true;
+            pointer.handsfree = false;
+            pointer.now.scroll_x = 0.0;
+            pointer.now.scroll_y = 0.0;
+            pointer.now.alt_click = false;
+            pointer.now.move_mouse = false;
+            pointer.now.click = derived.pinch_strength
+                >= if pointer.before.click { 0.65 } else { 0.78 }
+                && derived.grab_strength < 0.65;
+            pointer.now.grab =
+                derived.grab_strength >= if pointer.before.grab { 0.60 } else { 0.72 };
+            any_tracked = true;
+        }
+
+        any_tracked
+    }
+}
+
+fn joint_position(joints: &xr::HandJointLocations, joint: xr::HandJoint) -> Option<Vec3A> {
+    let joint = joints[joint.into_raw() as usize];
+    if !joint
+        .location_flags
+        .contains(xr::SpaceLocationFlags::POSITION_VALID)
+    {
+        return None;
+    }
+
+    Some(Vec3A::new(
+        joint.pose.position.x,
+        joint.pose.position.y,
+        joint.pose.position.z,
+    ))
+}
+
+fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<DerivedHandInput> {
+    let wrist = joint_position(joints, xr::HandJoint::WRIST)?;
+    let palm = joint_position(joints, xr::HandJoint::PALM)?;
+    let thumb_tip = joint_position(joints, xr::HandJoint::THUMB_TIP)?;
+    let index_tip = joint_position(joints, xr::HandJoint::INDEX_TIP)?;
+    let middle_tip = joint_position(joints, xr::HandJoint::MIDDLE_TIP)?;
+    let ring_tip = joint_position(joints, xr::HandJoint::RING_TIP)?;
+    let little_tip = joint_position(joints, xr::HandJoint::LITTLE_TIP)?;
+    let index_proximal = joint_position(joints, xr::HandJoint::INDEX_PROXIMAL)?;
+    let little_proximal = joint_position(joints, xr::HandJoint::LITTLE_PROXIMAL)?;
+
+    let hand_scale = (palm - wrist).length().max(0.03);
+    let pose = pose_from_hand_points(
+        wrist.into(),
+        index_tip.into(),
+        little_proximal.into(),
+        index_proximal.into(),
+    );
+
+    Some(DerivedHandInput {
+        pose,
+        pinch_strength: pinch_strength(thumb_tip.into(), index_tip.into(), hand_scale),
+        grab_strength: grab_strength(
+            palm.into(),
+            [
+                index_tip.into(),
+                middle_tip.into(),
+                ring_tip.into(),
+                little_tip.into(),
+            ],
+            hand_scale,
+        ),
+    })
+}
+
+fn normalized_strength(distance: f32, closed_distance: f32, open_distance: f32) -> f32 {
+    if open_distance <= closed_distance {
+        return 0.0;
+    }
+
+    (1.0 - (distance - closed_distance) / (open_distance - closed_distance)).clamp(0.0, 1.0)
+}
+
+fn pinch_strength(thumb_tip: Vec3, index_tip: Vec3, hand_scale: f32) -> f32 {
+    normalized_strength(
+        thumb_tip.distance(index_tip) / hand_scale.max(0.001),
+        0.25,
+        1.2,
+    )
+}
+
+fn grab_strength(palm: Vec3, fingertips: [Vec3; 4], hand_scale: f32) -> f32 {
+    let curled = fingertips
+        .into_iter()
+        .map(|tip| normalized_strength(tip.distance(palm) / hand_scale.max(0.001), 0.55, 1.45))
+        .sum::<f32>();
+
+    (curled / 4.0).clamp(0.0, 1.0)
+}
+
+fn pose_from_hand_points(
+    wrist: Vec3,
+    index_tip: Vec3,
+    little_proximal: Vec3,
+    index_proximal: Vec3,
+) -> Affine3A {
+    let wrist = Vec3A::from(wrist);
+    let index_tip = Vec3A::from(index_tip);
+    let little_proximal = Vec3A::from(little_proximal);
+    let index_proximal = Vec3A::from(index_proximal);
+
+    let mut forward = (index_tip - wrist).normalize_or_zero();
+    if forward.length_squared() < 0.0001 {
+        forward = Vec3A::NEG_Z;
+    }
+
+    let mut right = (index_proximal - little_proximal).normalize_or_zero();
+    if right.length_squared() < 0.0001 {
+        right = Vec3A::X;
+    }
+
+    let mut up = right.cross(forward).normalize_or_zero();
+    if up.length_squared() < 0.0001 {
+        up = Vec3A::Y;
+    }
+
+    right = forward.cross(up).normalize_or_zero();
+    if right.length_squared() < 0.0001 {
+        right = Vec3A::X;
+    }
+
+    up = right.cross(forward).normalize_or_zero();
+    if up.length_squared() < 0.0001 {
+        up = Vec3A::Y;
+    }
+
+    Affine3A {
+        matrix3: Mat3A::from_cols(right, up, -forward),
+        translation: wrist,
     }
 }
 
@@ -786,4 +980,64 @@ fn load_action_profiles() -> Vec<OpenXrActionConfProfile> {
     }
 
     profiles
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{Vec3, Vec3A};
+
+    use super::{grab_strength, pinch_strength, pose_from_hand_points};
+
+    #[test]
+    fn pinch_strength_increases_as_thumb_and_index_move_together() {
+        let far = pinch_strength(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.08, 0.0, 0.0), 0.04);
+        let near = pinch_strength(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.01, 0.0, 0.0), 0.04);
+
+        assert!(near > 0.7, "near pinch should register strongly: {near}");
+        assert!(far < 0.2, "far pinch should remain weak: {far}");
+    }
+
+    #[test]
+    fn grab_strength_detects_closed_hand() {
+        let open = grab_strength(
+            Vec3::ZERO,
+            [
+                Vec3::new(0.07, 0.0, -0.02),
+                Vec3::new(0.02, 0.0, -0.08),
+                Vec3::new(-0.01, 0.0, -0.085),
+                Vec3::new(-0.04, 0.0, -0.07),
+            ],
+            0.05,
+        );
+        let closed = grab_strength(
+            Vec3::ZERO,
+            [
+                Vec3::new(0.03, 0.0, -0.015),
+                Vec3::new(0.02, -0.005, -0.02),
+                Vec3::new(0.0, -0.004, -0.018),
+                Vec3::new(-0.02, -0.004, -0.016),
+            ],
+            0.05,
+        );
+
+        assert!(closed > 0.7, "closed hand should read as grab: {closed}");
+        assert!(open < 0.35, "open hand should not read as grab: {open}");
+    }
+
+    #[test]
+    fn pose_from_hand_points_points_ray_toward_index_tip() {
+        let pose = pose_from_hand_points(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -0.2),
+            Vec3::new(-0.05, 0.0, -0.05),
+            Vec3::new(0.03, 0.0, -0.04),
+        );
+
+        let forward = pose.transform_vector3a(Vec3A::NEG_Z).normalize();
+        assert!(
+            forward.dot(Vec3A::new(0.0, 0.0, -1.0)) > 0.95,
+            "forward was {forward:?}"
+        );
+        assert!((pose.translation - Vec3A::ZERO).length() < 0.0001);
+    }
 }

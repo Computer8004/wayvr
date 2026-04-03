@@ -49,6 +49,11 @@ pub(super) fn init_xr() -> Result<(xr::Instance, xr::SystemId), anyhow::Error> {
     } else {
         log::warn!("Missing EXT_hand_interaction extension.");
     }
+    if available_extensions.ext_hand_tracking {
+        enabled_extensions.ext_hand_tracking = true;
+    } else {
+        log::warn!("Missing EXT_hand_tracking extension.");
+    }
     if available_extensions.ext_eye_gaze_interaction {
         enabled_extensions.ext_eye_gaze_interaction = true;
     } else {
