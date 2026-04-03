@@ -44,6 +44,7 @@ struct OpenXrHandTracking {
     interaction_enabled: bool,
     palms_up_since: Option<Instant>,
     last_toggle: Instant,
+    last_toggle_progress_stage: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -387,6 +388,7 @@ impl OpenXrHandTracking {
                 interaction_enabled: true,
                 palms_up_since: None,
                 last_toggle: Instant::now(),
+                last_toggle_progress_stage: 0,
             }),
             _ => {
                 log::warn!(
@@ -488,12 +490,31 @@ impl OpenXrHandTracking {
 
         if both_palms_up {
             let since = self.palms_up_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(1400)
+            let elapsed = since.elapsed();
+            let progress_stage = ((elapsed.as_millis() / 350).min(4)) as u8;
+            if progress_stage > 0 && progress_stage != self.last_toggle_progress_stage {
+                self.last_toggle_progress_stage = progress_stage;
+                let icon = match progress_stage {
+                    1 => "◔",
+                    2 => "◑",
+                    3 => "◕",
+                    _ => "●",
+                };
+                Toast::new(
+                    ToastTopic::DesktopNotification,
+                    format!("{icon} Hand toggle"),
+                    "Hold both palms up".into(),
+                )
+                .with_timeout(0.45)
+                .submit(state);
+            }
+            if elapsed >= Duration::from_millis(1400)
                 && self.last_toggle.elapsed() >= Duration::from_secs(2)
             {
                 self.interaction_enabled = !self.interaction_enabled;
                 self.palms_up_since = None;
                 self.last_toggle = Instant::now();
+                self.last_toggle_progress_stage = 0;
 
                 for pointer in &mut state.input_state.pointers {
                     pointer.interaction_enabled = self.interaction_enabled;
@@ -527,6 +548,7 @@ impl OpenXrHandTracking {
             }
         } else {
             self.palms_up_since = None;
+            self.last_toggle_progress_stage = 0;
         }
     }
 }
@@ -700,7 +722,7 @@ fn pose_from_hand_points(
 
     let stable_forward = ((middle_tip + ring_tip + little_tip) / 3.0 - palm).normalize_or_zero();
     let index_forward = (index_tip - palm).normalize_or_zero();
-    let mut forward = stable_forward.lerp(index_forward, 0.35).normalize_or_zero();
+    let mut forward = stable_forward.lerp(index_forward, 0.12).normalize_or_zero();
     if forward.length_squared() < 0.0001 {
         forward = (index_tip - wrist).normalize_or_zero();
     }
