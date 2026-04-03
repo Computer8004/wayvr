@@ -161,7 +161,7 @@ pub fn create_watch(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
             positioning,
             transform: Affine3A::from_scale_rotation_translation(
                 Vec3::ONE * 0.115,
-                WATCH_ROT,
+                WATCH_ROT * Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
                 WATCH_POS,
             ),
             angle_fade: false,

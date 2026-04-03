@@ -46,9 +46,10 @@ struct OpenXrHandTracking {
     last_missing_joint_log: [Instant; 2],
     last_joint_error_log: [Instant; 2],
     interaction_enabled: bool,
-    palms_up_since: Option<Instant>,
     last_toggle: Instant,
     last_toggle_progress_stage: u8,
+    toggle_progress: Duration,
+    last_progress_update: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -391,9 +392,10 @@ impl OpenXrHandTracking {
                 last_missing_joint_log: [Instant::now(), Instant::now()],
                 last_joint_error_log: [Instant::now(), Instant::now()],
                 interaction_enabled: true,
-                palms_up_since: None,
                 last_toggle: Instant::now(),
                 last_toggle_progress_stage: 0,
+                toggle_progress: Duration::ZERO,
+                last_progress_update: Instant::now(),
             }),
             _ => {
                 log::warn!(
@@ -493,57 +495,65 @@ impl OpenXrHandTracking {
             })
         });
 
+        let now = Instant::now();
+        let delta = now.saturating_duration_since(self.last_progress_update);
+        self.last_progress_update = now;
+
         if both_palms_up {
-            let since = self.palms_up_since.get_or_insert_with(Instant::now);
-            let elapsed = since.elapsed();
-            let progress_stage = ((elapsed.as_millis() / 175).min(8)) as u8;
+            self.toggle_progress = (self.toggle_progress + delta).min(Duration::from_millis(1400));
+        } else {
+            self.toggle_progress = self.toggle_progress.saturating_sub(delta.mul_f32(1.5));
+        }
+
+        if self.toggle_progress > Duration::ZERO {
+            let progress_stage = ((self.toggle_progress.as_millis() / 175).min(8)) as u8;
             if progress_stage > 0 && progress_stage != self.last_toggle_progress_stage {
                 self.last_toggle_progress_stage = progress_stage;
                 show_toggle_indicator(state, progress_stage);
             }
-            if elapsed >= Duration::from_millis(1400)
-                && self.last_toggle.elapsed() >= Duration::from_secs(2)
-            {
-                self.interaction_enabled = !self.interaction_enabled;
-                self.palms_up_since = None;
-                self.last_toggle = Instant::now();
-                self.last_toggle_progress_stage = 0;
-                hide_toggle_indicator(state);
-
-                for pointer in &mut state.input_state.pointers {
-                    pointer.interaction_enabled = self.interaction_enabled;
-                    pointer.now.click = false;
-                    pointer.now.grab = false;
-                    pointer.now.scroll_x = 0.0;
-                    pointer.now.scroll_y = 0.0;
-                    pointer.now.alt_click = false;
-                    pointer.now.move_mouse = false;
-                    pointer.now.click_modifier_right = false;
-                    pointer.now.click_modifier_middle = false;
-                    pointer.now.show_hide = false;
-                    pointer.now.toggle_dashboard = false;
-                    pointer.now.space_drag = false;
-                    pointer.now.space_rotate = false;
-                    pointer.now.space_reset = false;
-                }
-
-                let state_text = if self.interaction_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                };
-                log::info!("OpenXR hand interaction toggled {state_text} via palms-up gesture.");
-                Toast::new(
-                    ToastTopic::DesktopNotification,
-                    "Hand input".into(),
-                    format!("Hand interaction {state_text}"),
-                )
-                .submit(state);
-            }
         } else {
-            self.palms_up_since = None;
             self.last_toggle_progress_stage = 0;
             hide_toggle_indicator(state);
+        }
+
+        if self.toggle_progress >= Duration::from_millis(1400)
+            && self.last_toggle.elapsed() >= Duration::from_secs(2)
+        {
+            self.interaction_enabled = !self.interaction_enabled;
+            self.toggle_progress = Duration::ZERO;
+            self.last_toggle = Instant::now();
+            self.last_toggle_progress_stage = 0;
+            hide_toggle_indicator(state);
+
+            for pointer in &mut state.input_state.pointers {
+                pointer.interaction_enabled = self.interaction_enabled;
+                pointer.now.click = false;
+                pointer.now.grab = false;
+                pointer.now.scroll_x = 0.0;
+                pointer.now.scroll_y = 0.0;
+                pointer.now.alt_click = false;
+                pointer.now.move_mouse = false;
+                pointer.now.click_modifier_right = false;
+                pointer.now.click_modifier_middle = false;
+                pointer.now.show_hide = false;
+                pointer.now.toggle_dashboard = false;
+                pointer.now.space_drag = false;
+                pointer.now.space_rotate = false;
+                pointer.now.space_reset = false;
+            }
+
+            let state_text = if self.interaction_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            log::info!("OpenXR hand interaction toggled {state_text} via palms-up gesture.");
+            Toast::new(
+                ToastTopic::DesktopNotification,
+                "Hand input".into(),
+                format!("Hand interaction {state_text}"),
+            )
+            .submit(state);
         }
     }
 }
