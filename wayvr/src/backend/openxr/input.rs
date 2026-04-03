@@ -619,12 +619,30 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
             ],
             hand_scale,
         ),
-        palm_up: palm_up(pose),
+        palm_up: palm_up_from_points(
+            wrist.into(),
+            palm.into(),
+            [
+                index_tip.into(),
+                middle_tip.into(),
+                ring_tip.into(),
+                little_tip.into(),
+            ],
+            hand_scale,
+        ),
     })
 }
 
-fn palm_up(pose: Affine3A) -> bool {
-    pose.y_axis.normalize_or_zero().dot(Vec3A::Y) > 0.72
+fn palm_up_from_points(wrist: Vec3, palm: Vec3, fingertips: [Vec3; 4], hand_scale: f32) -> bool {
+    let fingertips_avg = fingertips
+        .into_iter()
+        .fold(Vec3::ZERO, |acc, tip| acc + tip)
+        / 4.0;
+    let palm_above_wrist = palm.y - wrist.y > hand_scale * 0.10;
+    let fingertips_above_palm = fingertips_avg.y - palm.y > -hand_scale * 0.05;
+    let hand_open = grab_strength(palm, fingertips, hand_scale) < 0.35;
+
+    palm_above_wrist && fingertips_above_palm && hand_open
 }
 
 fn normalized_strength(distance: f32, closed_distance: f32, open_distance: f32) -> f32 {

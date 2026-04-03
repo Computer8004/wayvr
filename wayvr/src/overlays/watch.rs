@@ -164,7 +164,7 @@ pub fn create_watch(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
                 WATCH_ROT,
                 WATCH_POS,
             ),
-            angle_fade: true,
+            angle_fade: false,
             ..OverlayWindowState::default()
         },
         show_on_spawn: true,
