@@ -27,7 +27,7 @@ use crate::{
 
 pub const WATCH_NAME: &str = "watch";
 
-pub const WATCH_POS: Vec3 = vec3(-0.03, -0.01, 0.125);
+pub const WATCH_POS: Vec3 = vec3(-0.01, 0.015, 0.07);
 pub const WATCH_ROT: Quat = Quat::from_xyzw(-0.707_106_6, 0.000_796_361_8, 0.707_106_6, 0.0);
 
 #[derive(Default)]
@@ -161,7 +161,7 @@ pub fn create_watch(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
             positioning,
             transform: Affine3A::from_scale_rotation_translation(
                 Vec3::ONE * 0.115,
-                WATCH_ROT,
+                WATCH_ROT * Quat::from_rotation_z(std::f32::consts::PI),
                 WATCH_POS,
             ),
             angle_fade: false,

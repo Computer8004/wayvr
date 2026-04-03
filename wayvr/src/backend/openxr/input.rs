@@ -482,13 +482,13 @@ impl OpenXrHandTracking {
     ) {
         let both_palms_up = derived_inputs.iter().all(|entry| {
             entry.as_ref().is_some_and(|(_, derived)| {
-                derived.palm_up && derived.grab_strength < 0.35 && derived.pinch_strength < 0.35
+                derived.palm_up && derived.grab_strength < 0.15 && derived.pinch_strength < 0.15
             })
         });
 
         if both_palms_up {
             let since = self.palms_up_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_millis(900)
+            if since.elapsed() >= Duration::from_millis(1400)
                 && self.last_toggle.elapsed() >= Duration::from_secs(2)
             {
                 self.interaction_enabled = !self.interaction_enabled;
@@ -642,9 +642,9 @@ fn palm_up_from_points(wrist: Vec3, palm: Vec3, fingertips: [Vec3; 4], hand_scal
         .into_iter()
         .fold(Vec3::ZERO, |acc, tip| acc + tip)
         / 4.0;
-    let palm_above_wrist = palm.y - wrist.y > hand_scale * 0.10;
-    let fingertips_above_palm = fingertips_avg.y - palm.y > -hand_scale * 0.05;
-    let hand_open = grab_strength(palm, fingertips, hand_scale) < 0.35;
+    let palm_above_wrist = palm.y - wrist.y > hand_scale * 0.18;
+    let fingertips_above_palm = fingertips_avg.y - palm.y > hand_scale * 0.02;
+    let hand_open = grab_strength(palm, fingertips, hand_scale) < 0.20;
 
     palm_above_wrist && fingertips_above_palm && hand_open
 }

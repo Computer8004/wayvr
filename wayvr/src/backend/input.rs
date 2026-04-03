@@ -208,6 +208,7 @@ pub struct InteractionState {
     pub grabbed: Option<GrabData>,
     pub clicked_id: Option<OverlayID>,
     pub hovered_id: Option<OverlayID>,
+    pub click_locked_pose: Option<Affine3A>,
     pub should_block_input: bool,
     pub should_block_poses: bool,
 }
@@ -219,6 +220,7 @@ impl Default for InteractionState {
             grabbed: None,
             clicked_id: None,
             hovered_id: None,
+            click_locked_pose: None,
             should_block_input: false,
             should_block_poses: false,
         }
@@ -431,6 +433,10 @@ where
         return (None, pending_haptics);
     }
 
+    if pointer.now.click && !pointer.before.click {
+        pointer.interaction.click_locked_pose = Some(pointer.pose);
+    }
+
     let hovered_id = pointer.interaction.hovered_id.take();
     let (Some((mut hit, raw_hit)), haptics) = get_nearest_hit(idx, overlays, app) else {
         handle_no_hit(idx, hovered_id, overlays, app);
@@ -530,6 +536,7 @@ where
         );
         hovered.config.backend.on_pointer(app, &hit, true);
     } else if !pointer.now.click && pointer.before.click {
+        pointer.interaction.click_locked_pose = None;
         // send release event to overlay that was originally clicked
         if let Some(clicked_id) = pointer.interaction.clicked_id.take() {
             if let Some(clicked) = overlays.mut_by_id(clicked_id) {
@@ -563,6 +570,9 @@ fn handle_no_hit<O>(
     let pointer = &mut app.input_state.pointers[pointer_idx];
     pointer.interaction.should_block_input = false;
     pointer.interaction.should_block_poses = false;
+    if !pointer.now.click {
+        pointer.interaction.click_locked_pose = None;
+    }
 
     // in case click released while not aiming at anything
     // send release event to overlay that was originally clicked
@@ -647,7 +657,10 @@ where
     O: Default,
 {
     let pointer = &mut app.input_state.pointers[pointer_idx];
-    let ray_origin = pointer.pose;
+    let ray_origin = pointer
+        .interaction
+        .click_locked_pose
+        .unwrap_or(pointer.pose);
     let mode = pointer.interaction.mode;
     let edit_mode = overlays.get_edit_mode();
 
