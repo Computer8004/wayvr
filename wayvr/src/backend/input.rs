@@ -235,6 +235,7 @@ pub struct Pointer {
     pub pending_haptics: Option<Haptics>,
     pub(super) interaction: InteractionState,
     pub tracked: bool,
+    pub interaction_enabled: bool,
     pub handsfree: bool,
 }
 
@@ -251,6 +252,7 @@ impl Pointer {
             pending_haptics: None,
             interaction: InteractionState::default(),
             tracked: false,
+            interaction_enabled: true,
             handsfree: false,
         }
     }
@@ -413,7 +415,8 @@ where
     let mut pointer = &mut app.input_state.pointers[idx];
     let pending_haptics = pointer.pending_haptics.take();
 
-    if !pointer.tracked {
+    if !pointer.tracked || !pointer.interaction_enabled {
+        handle_no_hit(idx, pointer.interaction.hovered_id.take(), overlays, app);
         return (None, pending_haptics); // no hit
     }
 

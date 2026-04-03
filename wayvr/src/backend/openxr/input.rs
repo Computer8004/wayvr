@@ -8,10 +8,11 @@ use glam::{Affine3A, Mat3A, Quat, Vec3, Vec3A, bool};
 use libmonado::{self as mnd, DeviceLogic};
 use openxr::{self as xr, Quaternionf, Vector2f, Vector3f};
 use serde::{Deserialize, Serialize};
-use wlx_common::{config::HandsfreePointer, config_io};
+use wlx_common::{config::HandsfreePointer, config_io, overlays::ToastTopic};
 
 use crate::{
     backend::input::{Haptics, InputState, Pointer, TrackedDevice, TrackedDeviceRole},
+    overlays::toast::Toast,
     state::{AppSession, AppState},
 };
 
@@ -40,12 +41,17 @@ struct OpenXrHandTracking {
     logged_joint_success: [bool; 2],
     last_missing_joint_log: [Instant; 2],
     last_joint_error_log: [Instant; 2],
+    interaction_enabled: bool,
+    palms_up_since: Option<Instant>,
+    last_toggle: Instant,
 }
 
+#[derive(Clone, Copy)]
 struct DerivedHandInput {
     pose: Affine3A,
     pinch_strength: f32,
     grab_strength: f32,
+    palm_up: bool,
 }
 
 pub struct MultiClickHandler<const COUNT: usize> {
@@ -252,7 +258,7 @@ impl OpenXrInputSource {
         }
 
         if let Some(hand_tracking) = self.hand_tracking.as_mut() {
-            any_tracked |= hand_tracking.update(&mut state.input_state, xr);
+            any_tracked |= hand_tracking.update(state, xr);
         }
 
         if !any_tracked {
@@ -378,6 +384,9 @@ impl OpenXrHandTracking {
                 logged_joint_success: [false, false],
                 last_missing_joint_log: [Instant::now(), Instant::now()],
                 last_joint_error_log: [Instant::now(), Instant::now()],
+                interaction_enabled: true,
+                palms_up_since: None,
+                last_toggle: Instant::now(),
             }),
             _ => {
                 log::warn!(
@@ -388,11 +397,12 @@ impl OpenXrHandTracking {
         }
     }
 
-    fn update(&mut self, input_state: &mut InputState, xr: &XrState) -> bool {
+    fn update(&mut self, state: &mut AppState, xr: &XrState) -> bool {
         let mut any_tracked = false;
+        let mut derived_inputs: [Option<(bool, DerivedHandInput)>; 2] = from_fn(|_| None);
 
         for (idx, tracker) in self.trackers.iter().enumerate() {
-            let pointer = &mut input_state.pointers[idx];
+            let pointer = &mut state.input_state.pointers[idx];
             let had_pose = pointer.tracked;
             any_tracked |= had_pose;
 
@@ -438,20 +448,86 @@ impl OpenXrHandTracking {
 
             if !self.logged_joint_success[idx] {
                 log::info!(
-                    "OpenXR {} hand joints are valid. pose_fallback={} pinch_strength={:.2} grab_strength={:.2}",
+                    "OpenXR {} hand joints are valid. pose_fallback={} pinch_strength={:.2} grab_strength={:.2} palm_up={}",
                     hand_name(idx),
                     !had_pose,
                     derived.pinch_strength,
-                    derived.grab_strength
+                    derived.grab_strength,
+                    derived.palm_up
                 );
                 self.logged_joint_success[idx] = true;
             }
 
-            apply_derived_hand_input(pointer, &derived, !had_pose);
+            derived_inputs[idx] = Some((had_pose, derived));
             any_tracked = true;
         }
 
+        self.update_interaction_toggle(state, &derived_inputs);
+
+        for (idx, maybe_derived) in derived_inputs.into_iter().enumerate() {
+            let Some((had_pose, derived)) = maybe_derived else {
+                continue;
+            };
+            let pointer = &mut state.input_state.pointers[idx];
+            apply_derived_hand_input(pointer, &derived, !had_pose, self.interaction_enabled);
+        }
+
         any_tracked
+    }
+
+    fn update_interaction_toggle(
+        &mut self,
+        state: &mut AppState,
+        derived_inputs: &[Option<(bool, DerivedHandInput)>; 2],
+    ) {
+        let both_palms_up = derived_inputs.iter().all(|entry| {
+            entry.as_ref().is_some_and(|(_, derived)| {
+                derived.palm_up && derived.grab_strength < 0.35 && derived.pinch_strength < 0.35
+            })
+        });
+
+        if both_palms_up {
+            let since = self.palms_up_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(900)
+                && self.last_toggle.elapsed() >= Duration::from_secs(2)
+            {
+                self.interaction_enabled = !self.interaction_enabled;
+                self.palms_up_since = None;
+                self.last_toggle = Instant::now();
+
+                for pointer in &mut state.input_state.pointers {
+                    pointer.interaction_enabled = self.interaction_enabled;
+                    pointer.now.click = false;
+                    pointer.now.grab = false;
+                    pointer.now.scroll_x = 0.0;
+                    pointer.now.scroll_y = 0.0;
+                    pointer.now.alt_click = false;
+                    pointer.now.move_mouse = false;
+                    pointer.now.click_modifier_right = false;
+                    pointer.now.click_modifier_middle = false;
+                    pointer.now.show_hide = false;
+                    pointer.now.toggle_dashboard = false;
+                    pointer.now.space_drag = false;
+                    pointer.now.space_rotate = false;
+                    pointer.now.space_reset = false;
+                }
+
+                let state_text = if self.interaction_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                log::info!("OpenXR hand interaction toggled {state_text} via palms-up gesture.");
+                Toast::new(
+                    ToastTopic::System,
+                    "Hand input".into(),
+                    format!("Hand interaction {state_text}"),
+                )
+                .submit(state);
+            }
+        } else {
+            self.palms_up_since = None;
+        }
     }
 }
 
@@ -463,16 +539,20 @@ fn hand_name(idx: usize) -> &'static str {
     }
 }
 
-fn apply_derived_hand_input(pointer: &mut Pointer, derived: &DerivedHandInput, update_pose: bool) {
+fn apply_derived_hand_input(
+    pointer: &mut Pointer,
+    derived: &DerivedHandInput,
+    update_pose: bool,
+    interaction_enabled: bool,
+) {
     if update_pose {
         pointer.raw_pose = derived.pose;
         pointer.pose = derived.pose;
         pointer.tracked = true;
     }
 
-    // For joint-derived hand input, prefer the compact handsfree reticle instead of a full laser.
-    // It is much less intrusive for controller-free use, especially while typing.
-    pointer.handsfree = true;
+    pointer.interaction_enabled = interaction_enabled;
+    pointer.handsfree = false;
     pointer.now.scroll_x = 0.0;
     pointer.now.scroll_y = 0.0;
     pointer.now.alt_click = false;
@@ -484,9 +564,11 @@ fn apply_derived_hand_input(pointer: &mut Pointer, derived: &DerivedHandInput, u
     pointer.now.space_drag = false;
     pointer.now.space_rotate = false;
     pointer.now.space_reset = false;
-    pointer.now.click = derived.pinch_strength >= if pointer.before.click { 0.65 } else { 0.78 }
+    pointer.now.click = interaction_enabled
+        && derived.pinch_strength >= if pointer.before.click { 0.65 } else { 0.78 }
         && derived.grab_strength < 0.65;
-    pointer.now.grab = derived.grab_strength >= if pointer.before.grab { 0.60 } else { 0.72 };
+    pointer.now.grab = interaction_enabled
+        && derived.grab_strength >= if pointer.before.grab { 0.60 } else { 0.72 };
 }
 
 fn joint_position(joints: &xr::HandJointLocations, joint: xr::HandJoint) -> Option<Vec3A> {
@@ -537,7 +619,12 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
             ],
             hand_scale,
         ),
+        palm_up: palm_up(pose),
     })
+}
+
+fn palm_up(pose: Affine3A) -> bool {
+    pose.y_axis.normalize_or_zero().dot(Vec3A::Y) > 0.72
 }
 
 fn normalized_strength(distance: f32, closed_distance: f32, open_distance: f32) -> f32 {
@@ -648,6 +735,7 @@ impl OpenXrPointer {
             }
         }
 
+        pointer.interaction_enabled = true;
         pointer.handsfree = pointer.tracked;
         if matches!(
             session.config.handsfree_pointer,
@@ -668,6 +756,7 @@ impl OpenXrPointer {
         xr: &XrState,
         session: &AppSession,
     ) -> anyhow::Result<()> {
+        pointer.interaction_enabled = true;
         pointer.handsfree = false;
         self.pointer_load_pose(pointer, xr, session.config.pointer_lerp_factor)?;
         self.pointer_load_actions(pointer, xr, session)?;
