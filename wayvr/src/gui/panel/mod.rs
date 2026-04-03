@@ -528,8 +528,10 @@ pub fn apply_custom_command<T>(
 
                 if let Some(mut sprite) = pair.widget.get_as::<WidgetSprite>() {
                     sprite.set_content(&mut com, Some(data));
+                    com.alterables.mark_redraw();
                 } else if let Some(mut image) = pair.widget.get_as::<WidgetImage>() {
                     image.set_content(&mut com, Some(data));
+                    com.alterables.mark_redraw();
                 } else {
                     anyhow::bail!("No <sprite> or <image> with such id.");
                 }
