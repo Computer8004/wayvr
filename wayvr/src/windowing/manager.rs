@@ -518,9 +518,13 @@ impl<T> OverlayWindowManager<T> {
         for (name, ows) in app.session.config.global_set.clone() {
             let mut ows = ows.clone();
 
-            // fix angle_fade missing on watch if loading older state
+            // For the watch, prefer current runtime defaults over stale saved fade/alpha state.
+            // Hand-tracking poses differ from controller poses enough that old serialized watch state
+            // can leave it effectively invisible.
             if name.as_ref() == WATCH_NAME {
-                ows.angle_fade = true;
+                ows.angle_fade = false;
+                ows.alpha = 1.0;
+                ows.saved_transform = None;
             }
 
             if let Some(oid) = self.lookup(&name)

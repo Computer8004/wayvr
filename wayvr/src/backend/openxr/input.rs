@@ -519,7 +519,7 @@ impl OpenXrHandTracking {
                 };
                 log::info!("OpenXR hand interaction toggled {state_text} via palms-up gesture.");
                 Toast::new(
-                    ToastTopic::System,
+                    ToastTopic::DesktopNotification,
                     "Hand input".into(),
                     format!("Hand interaction {state_text}"),
                 )
@@ -601,7 +601,11 @@ fn derive_hand_input_from_joints(joints: &xr::HandJointLocations) -> Option<Deri
     let hand_scale = (palm - wrist).length().max(0.03);
     let pose = pose_from_hand_points(
         wrist.into(),
+        palm.into(),
         index_tip.into(),
+        middle_tip.into(),
+        ring_tip.into(),
+        little_tip.into(),
         little_proximal.into(),
         index_proximal.into(),
     );
@@ -672,23 +676,36 @@ fn grab_strength(palm: Vec3, fingertips: [Vec3; 4], hand_scale: f32) -> f32 {
 
 fn pose_from_hand_points(
     wrist: Vec3,
+    palm: Vec3,
     index_tip: Vec3,
+    middle_tip: Vec3,
+    ring_tip: Vec3,
+    little_tip: Vec3,
     little_proximal: Vec3,
     index_proximal: Vec3,
 ) -> Affine3A {
     let wrist = Vec3A::from(wrist);
+    let palm = Vec3A::from(palm);
     let index_tip = Vec3A::from(index_tip);
+    let middle_tip = Vec3A::from(middle_tip);
+    let ring_tip = Vec3A::from(ring_tip);
+    let little_tip = Vec3A::from(little_tip);
     let little_proximal = Vec3A::from(little_proximal);
     let index_proximal = Vec3A::from(index_proximal);
-
-    let mut forward = (index_tip - wrist).normalize_or_zero();
-    if forward.length_squared() < 0.0001 {
-        forward = Vec3A::NEG_Z;
-    }
 
     let mut right = (index_proximal - little_proximal).normalize_or_zero();
     if right.length_squared() < 0.0001 {
         right = Vec3A::X;
+    }
+
+    let stable_forward = ((middle_tip + ring_tip + little_tip) / 3.0 - palm).normalize_or_zero();
+    let index_forward = (index_tip - palm).normalize_or_zero();
+    let mut forward = stable_forward.lerp(index_forward, 0.35).normalize_or_zero();
+    if forward.length_squared() < 0.0001 {
+        forward = (index_tip - wrist).normalize_or_zero();
+    }
+    if forward.length_squared() < 0.0001 {
+        forward = Vec3A::NEG_Z;
     }
 
     let mut up = right.cross(forward).normalize_or_zero();
@@ -706,9 +723,11 @@ fn pose_from_hand_points(
         up = Vec3A::Y;
     }
 
+    let translation = wrist.lerp(palm, 0.7);
+
     Affine3A {
         matrix3: Mat3A::from_cols(right, up, -forward),
-        translation: wrist,
+        translation,
     }
 }
 
@@ -1219,7 +1238,11 @@ mod tests {
     fn pose_from_hand_points_points_ray_toward_index_tip() {
         let pose = pose_from_hand_points(
             Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -0.03),
             Vec3::new(0.0, 0.0, -0.2),
+            Vec3::new(0.0, 0.0, -0.18),
+            Vec3::new(-0.01, 0.0, -0.16),
+            Vec3::new(-0.02, 0.0, -0.14),
             Vec3::new(-0.05, 0.0, -0.05),
             Vec3::new(0.03, 0.0, -0.04),
         );
@@ -1229,6 +1252,6 @@ mod tests {
             forward.dot(Vec3A::new(0.0, 0.0, -1.0)) > 0.95,
             "forward was {forward:?}"
         );
-        assert!((pose.translation - Vec3A::ZERO).length() < 0.0001);
+        assert!((pose.translation - Vec3A::new(0.0, 0.0, -0.021)).length() < 0.0001);
     }
 }
