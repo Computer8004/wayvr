@@ -13,9 +13,12 @@ use wlx_common::{config::HandsfreePointer, config_io, overlays::ToastTopic};
 use crate::{
     backend::{
         input::{Haptics, InputState, Pointer, TrackedDevice, TrackedDeviceRole},
-        task::{ModifyPanelCommand, ModifyPanelTask, OverlayTask, TaskType},
+        task::{OverlayTask, TaskType},
     },
-    overlays::{anchor::HAND_TOGGLE_INDICATOR_NAME, toast::Toast},
+    overlays::{
+        anchor::{HAND_DEBUG_LEFT_NAME, HAND_DEBUG_RIGHT_NAME, HAND_TOGGLE_INDICATOR_NAME},
+        toast::Toast,
+    },
     state::{AppSession, AppState},
     windowing::OverlaySelector,
 };
@@ -45,6 +48,7 @@ struct OpenXrHandTracking {
     logged_joint_success: [bool; 2],
     last_missing_joint_log: [Instant; 2],
     last_joint_error_log: [Instant; 2],
+    debug_overlay_visible: [bool; 2],
     interaction_enabled: bool,
     last_toggle: Instant,
     last_toggle_progress_stage: u8,
@@ -392,6 +396,7 @@ impl OpenXrHandTracking {
                 logged_joint_success: [false, false],
                 last_missing_joint_log: [Instant::now(), Instant::now()],
                 last_joint_error_log: [Instant::now(), Instant::now()],
+                debug_overlay_visible: [false, false],
                 interaction_enabled: true,
                 last_toggle: Instant::now(),
                 last_toggle_progress_stage: 0,
@@ -410,15 +415,17 @@ impl OpenXrHandTracking {
     fn update(&mut self, state: &mut AppState, xr: &XrState) -> bool {
         let mut any_tracked = false;
         let mut derived_inputs: [Option<(bool, DerivedHandInput)>; 2] = from_fn(|_| None);
+        let mut desired_debug_overlays = [false, false];
 
-        for (idx, tracker) in self.trackers.iter().enumerate() {
+        for idx in 0..self.trackers.len() {
+            let tracker = &self.trackers[idx];
             let pointer = &mut state.input_state.pointers[idx];
             let had_pose = pointer.tracked;
             any_tracked |= had_pose;
 
             let joints = match xr
                 .stage
-                .locate_hand_joints(tracker, xr.predicted_display_time)
+                .locate_hand_joints(&tracker, xr.predicted_display_time)
             {
                 Ok(Some(joints)) => joints,
                 Ok(None) => {
@@ -430,6 +437,7 @@ impl OpenXrHandTracking {
                         );
                         self.last_missing_joint_log[idx] = Instant::now();
                     }
+                    desired_debug_overlays[idx] = false;
                     continue;
                 }
                 Err(err) => {
@@ -441,6 +449,7 @@ impl OpenXrHandTracking {
                         );
                         self.last_joint_error_log[idx] = Instant::now();
                     }
+                    desired_debug_overlays[idx] = false;
                     continue;
                 }
             };
@@ -453,6 +462,7 @@ impl OpenXrHandTracking {
                     );
                     self.last_missing_joint_log[idx] = Instant::now();
                 }
+                desired_debug_overlays[idx] = false;
                 continue;
             };
 
@@ -468,8 +478,13 @@ impl OpenXrHandTracking {
                 self.logged_joint_success[idx] = true;
             }
 
+            desired_debug_overlays[idx] = true;
             derived_inputs[idx] = Some((had_pose, derived));
             any_tracked = true;
+        }
+
+        for (idx, visible) in desired_debug_overlays.into_iter().enumerate() {
+            self.set_hand_debug_overlay(state, idx, visible);
         }
 
         self.update_interaction_toggle(state, &derived_inputs);
@@ -483,6 +498,32 @@ impl OpenXrHandTracking {
         }
 
         any_tracked
+    }
+
+    fn set_hand_debug_overlay(&mut self, state: &mut AppState, idx: usize, visible: bool) {
+        if self.debug_overlay_visible[idx] == visible {
+            return;
+        }
+
+        self.debug_overlay_visible[idx] = visible;
+        let overlay_name = match idx {
+            0 => HAND_DEBUG_LEFT_NAME.clone(),
+            1 => HAND_DEBUG_RIGHT_NAME.clone(),
+            _ => return,
+        };
+
+        let task = if visible {
+            OverlayTask::Modify(
+                OverlaySelector::Name(overlay_name),
+                Box::new(|app, o| o.activate(app)),
+            )
+        } else {
+            OverlayTask::Modify(
+                OverlaySelector::Name(overlay_name),
+                Box::new(|_app, o| o.deactivate()),
+            )
+        };
+        state.tasks.enqueue(TaskType::Overlay(task));
     }
 
     fn update_interaction_toggle(
@@ -567,22 +608,11 @@ fn hand_name(idx: usize) -> &'static str {
     }
 }
 
-fn show_toggle_indicator(app: &mut AppState, stage: u8) {
-    let stage = stage.clamp(1, 32);
-    let image = format!("hand-toggle/progress{stage:02}.svg");
-
+fn show_toggle_indicator(app: &mut AppState, _stage: u8) {
     app.tasks.enqueue(TaskType::Overlay(OverlayTask::Modify(
         OverlaySelector::Name(HAND_TOGGLE_INDICATOR_NAME.clone()),
         Box::new(|app, o| o.activate(app)),
     )));
-    app.tasks
-        .enqueue(TaskType::Overlay(OverlayTask::ModifyPanel(
-            ModifyPanelTask {
-                overlay: HAND_TOGGLE_INDICATOR_NAME.as_ref().to_string(),
-                element: "progress_ring".into(),
-                command: ModifyPanelCommand::SetImage(image),
-            },
-        )));
 }
 
 fn hide_toggle_indicator(app: &mut AppState) {

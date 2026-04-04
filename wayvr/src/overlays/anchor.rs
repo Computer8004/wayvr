@@ -3,7 +3,10 @@ use std::sync::{Arc, LazyLock};
 use wgui::event::{EventAlterables, StyleSetRequest};
 use wgui::parser::Fetchable;
 use wgui::taffy;
-use wlx_common::windowing::{OverlayWindowState, Positioning};
+use wlx_common::{
+    common::LeftRight,
+    windowing::{OverlayWindowState, Positioning},
+};
 
 use crate::gui::panel::GuiPanel;
 use crate::overlays::watch::WATCH_NAME;
@@ -40,6 +43,10 @@ pub fn create_anchor(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> 
 pub static GRAB_HELP_NAME: LazyLock<Arc<str>> = LazyLock::new(|| Arc::from("grab-help"));
 pub static HAND_TOGGLE_INDICATOR_NAME: LazyLock<Arc<str>> =
     LazyLock::new(|| Arc::from("hand-toggle-indicator"));
+pub static HAND_DEBUG_LEFT_NAME: LazyLock<Arc<str>> =
+    LazyLock::new(|| Arc::from("hand-debug-left"));
+pub static HAND_DEBUG_RIGHT_NAME: LazyLock<Arc<str>> =
+    LazyLock::new(|| Arc::from("hand-debug-right"));
 
 pub fn create_grab_help(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
     let mut panel = GuiPanel::new_from_template(app, "gui/grab-help.xml", (), Default::default())?;
@@ -134,6 +141,57 @@ pub fn create_hand_toggle_indicator(app: &mut AppState) -> anyhow::Result<Overla
                 Vec3::ONE * 0.05,
                 Quat::IDENTITY,
                 vec3(0.0, 0.0, -0.35),
+            ),
+            ..OverlayWindowState::default()
+        },
+        global: true,
+        show_on_spawn: false,
+        ..OverlayWindowConfig::from_backend(Box::new(panel))
+    })
+}
+
+pub fn create_hand_debug_left(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
+    create_hand_debug_overlay(
+        app,
+        HAND_DEBUG_LEFT_NAME.clone(),
+        LeftRight::Left,
+        "gui/hand-debug-left.xml",
+    )
+}
+
+pub fn create_hand_debug_right(app: &mut AppState) -> anyhow::Result<OverlayWindowConfig> {
+    create_hand_debug_overlay(
+        app,
+        HAND_DEBUG_RIGHT_NAME.clone(),
+        LeftRight::Right,
+        "gui/hand-debug-right.xml",
+    )
+}
+
+fn create_hand_debug_overlay(
+    app: &mut AppState,
+    name: Arc<str>,
+    hand: LeftRight,
+    template: &str,
+) -> anyhow::Result<OverlayWindowConfig> {
+    let mut panel = GuiPanel::new_from_template(app, template, (), Default::default())?;
+    panel.update_layout(app)?;
+
+    Ok(OverlayWindowConfig {
+        name,
+        z_order: Z_ORDER_HELP,
+        default_state: OverlayWindowState {
+            interactable: false,
+            grabbable: false,
+            positioning: Positioning::FollowHand {
+                hand,
+                lerp: 1.0,
+                align_to_hmd: true,
+            },
+            transform: Affine3A::from_scale_rotation_translation(
+                Vec3::ONE * 0.05,
+                Quat::IDENTITY,
+                vec3(0.0, 0.035, 0.015),
             ),
             ..OverlayWindowState::default()
         },

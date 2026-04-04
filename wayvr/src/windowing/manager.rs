@@ -19,7 +19,10 @@ use crate::{
     backend::task::{OverlayTask, ToggleMode},
     config::save_state,
     overlays::{
-        anchor::{create_anchor, create_grab_help, create_hand_toggle_indicator},
+        anchor::{
+            create_anchor, create_grab_help, create_hand_debug_left, create_hand_debug_right,
+            create_hand_toggle_indicator,
+        },
         custom::create_custom,
         dashboard::{DASH_NAME, create_dash_frontend},
         edit::EditWrapperManager,
@@ -139,6 +142,12 @@ where
         let hand_toggle_indicator =
             OverlayWindowData::from_config(create_hand_toggle_indicator(app)?);
         me.add(hand_toggle_indicator, app);
+
+        let hand_debug_left = OverlayWindowData::from_config(create_hand_debug_left(app)?);
+        me.add(hand_debug_left, app);
+
+        let hand_debug_right = OverlayWindowData::from_config(create_hand_debug_right(app)?);
+        me.add(hand_debug_right, app);
 
         let custom_panels = app.session.config.custom_panels.clone();
         for name in custom_panels {
